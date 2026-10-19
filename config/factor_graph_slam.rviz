@@ -1,0 +1,82 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Reference Frame: odom
+      Value: true
+
+    - Class: rviz_default_plugins/Path
+      Color: 255; 128; 0
+      Enabled: true
+      Name: Raw Odom Path
+      Topic:
+        Value: /factor_graph/raw_odom_path
+      Value: true
+
+    - Class: rviz_default_plugins/Path
+      Color: 0; 170; 255
+      Enabled: true
+      Name: Optimized Path
+      Topic:
+        Value: /factor_graph/optimized_path
+      Value: true
+
+    - Class: rviz_default_plugins/Path
+      Color: 255; 255; 255
+      Enabled: true
+      Name: Ground Truth Path
+      Topic:
+        Value: /factor_graph/gt_path
+      Value: true
+
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Pose Graph
+      Topic:
+        Value: /factor_graph/graph_markers
+      Value: true
+
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 12
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.9
+      Target Frame: odom
+      Yaw: 0.8
+    Saved: ~
+
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  X: 60
+  Y: 60
