@@ -176,7 +176,7 @@ red loop-closure edge appears in the markers is the whole point of this
 project — it's optimization actually doing something, not just a graph
 sitting there.
 
-![Pose graph SLAM with loop closure](docs/pose_graph_loop_closure.png)
+![Pose graph SLAM with loop closure](pose_graph_loop_closure.png)
 *Raw odometry (orange) vs. GTSAM-optimized pose graph (blue) with ICP loop closures (red).*
 
 ## Tuning
