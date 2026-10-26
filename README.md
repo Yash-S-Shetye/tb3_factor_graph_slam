@@ -3,7 +3,7 @@
 Project 2 of the pose-graph/factor-graph SLAM learning track: 2D pose
 graph SLAM for TurtleBot3 using ICP scan matching for odometry edges,
 radius-based loop closure detection, and GTSAM `Pose2` factor graph
-optimization.
+optimization with occupancy grid mapping.
 
 This builds directly on project 1 (`tb3_pose_graph_vis`): same keyframe
 idea, same relative-pose math (`compose`/`relativeTransform` here are the
