@@ -15,6 +15,36 @@ Visualization Manager:
       Reference Frame: odom
       Value: true
 
+    - Alpha: 0.8
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: Optimized Map
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /factor_graph/optimized_map
+      Use Timestamp: false
+      Value: true
+
+    - Alpha: 0.8
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: Raw Odometry Map
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /factor_graph/raw_map
+      Use Timestamp: false
+      Value: true
+
     - Class: rviz_default_plugins/Path
       Color: 255; 128; 0
       Enabled: true
@@ -61,14 +91,14 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 12
+      Distance: 22
       Focal Point:
-        X: 0
+        X: 6.5
         Y: 0
         Z: 0
       Name: Current View
       Near Clip Distance: 0.01
-      Pitch: 0.9
+      Pitch: 1.2
       Target Frame: odom
       Yaw: 0.8
     Saved: ~

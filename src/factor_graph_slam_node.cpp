@@ -18,6 +18,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/point.hpp"
@@ -26,6 +27,7 @@
 #include "std_msgs/msg/int32.hpp"
 
 #include "scan_matcher.hpp"
+#include "occupancy_grid_map.hpp"
 
 #include <gtsam/geometry/Pose2.h>
 #include <gtsam/inference/Symbol.h>
@@ -37,9 +39,11 @@
 #include <gtsam/slam/BetweenFactor.h>
 
 using std::placeholders::_1;
+using tb3_factor_graph_slam::OccupancyGridMap;
 using tb3_factor_graph_slam::Pose2D;
 using tb3_factor_graph_slam::ScanMatcher;
 using tb3_factor_graph_slam::ScanMatchResult;
+using tb3_factor_graph_slam::StoredScan;
 
 namespace
 {
@@ -94,6 +98,7 @@ struct Keyframe
   Pose2D gt_pose;
   bool has_gt{false};
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
+  StoredScan scan;  // raw ranges in the sensor frame, re-projected into the map on demand
 };
 
 struct GraphEdgeInfo
@@ -118,6 +123,20 @@ public:
     declare_parameter<int>("loop_closure_min_index_gap", 20);
     declare_parameter<double>("loop_closure_fitness_threshold", 0.05);
     declare_parameter<double>("icp_fitness_threshold", 0.08);
+    declare_parameter<bool>("build_map", true);
+    declare_parameter<double>("map_resolution", 0.05);
+    declare_parameter<double>("map_width", 20.0);
+    declare_parameter<double>("map_height", 20.0);
+    declare_parameter<double>("map_origin_x", -10.0);
+    declare_parameter<double>("map_origin_y", -10.0);
+    // LiDAR position relative to the robot base (base_footprint). Defaults
+    // are for waffle_pi (-0.064 m); burger is -0.032 m.
+    declare_parameter<double>("lidar_offset_x", -0.064);
+    declare_parameter<double>("lidar_offset_y", 0.0);
+    declare_parameter<double>("lidar_offset_yaw", 0.0);
+    // Shifts the published raw-odometry map along x so it can be displayed
+    // beside the optimized map. 0 = overlay them in the same place.
+    declare_parameter<double>("raw_map_x_offset", 0.0);
 
     odom_topic_ = get_parameter("odom_topic").as_string();
     scan_topic_ = get_parameter("scan_topic").as_string();
@@ -128,6 +147,21 @@ public:
     loop_min_index_gap_ = get_parameter("loop_closure_min_index_gap").as_int();
     loop_fitness_threshold_ = get_parameter("loop_closure_fitness_threshold").as_double();
     icp_fitness_threshold_ = get_parameter("icp_fitness_threshold").as_double();
+    build_map_ = get_parameter("build_map").as_bool();
+    lidar_offset_.x = get_parameter("lidar_offset_x").as_double();
+    lidar_offset_.y = get_parameter("lidar_offset_y").as_double();
+    lidar_offset_.theta = get_parameter("lidar_offset_yaw").as_double();
+    raw_map_x_offset_ = get_parameter("raw_map_x_offset").as_double();
+
+    if (build_map_) {
+      const double res = get_parameter("map_resolution").as_double();
+      const double w = get_parameter("map_width").as_double();
+      const double h = get_parameter("map_height").as_double();
+      const double ox = get_parameter("map_origin_x").as_double();
+      const double oy = get_parameter("map_origin_y").as_double();
+      optimized_map_ = std::make_unique<OccupancyGridMap>(w, h, res, ox, oy);
+      raw_map_ = std::make_unique<OccupancyGridMap>(w, h, res, ox, oy);
+    }
 
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       odom_topic_, 10, std::bind(&FactorGraphSlamNode::odomCallback, this, _1));
@@ -150,6 +184,14 @@ public:
       "/factor_graph/optimized_drift", 10);
     loop_closure_count_pub_ = create_publisher<std_msgs::msg::Int32>(
       "/factor_graph/loop_closure_count", 10);
+
+    if (build_map_) {
+      const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
+      optimized_map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+        "/factor_graph/optimized_map", map_qos);
+      raw_map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+        "/factor_graph/raw_map", map_qos);
+    }
 
     raw_odom_path_.header.frame_id = "odom";
     optimized_path_.header.frame_id = "odom";
@@ -217,7 +259,10 @@ private:
       kf.has_gt = true;
     }
     kf.cloud = ScanMatcher::toPointCloud(*latest_scan_);
+    kf.scan = StoredScan::fromLaserScan(*latest_scan_);
     keyframes_.push_back(kf);
+    integrateIntoRawMap(keyframes_.back());
+    integrateIntoOptimizedMap(keyframes_.back());
 
     const auto prior_noise = gtsam::noiseModel::Diagonal::Sigmas(
       gtsam::Vector3(1e-3, 1e-3, 1e-4));
@@ -263,6 +308,7 @@ private:
       kf.has_gt = true;
     }
     kf.cloud = current_cloud;
+    kf.scan = StoredScan::fromLaserScan(*latest_scan_);
 
     graph_.add(
       gtsam::BetweenFactor<gtsam::Pose2>(
@@ -278,7 +324,14 @@ private:
     const bool loop_closed = tryLoopClosure(keyframes_.back());
     if (loop_closed) {
       optimizeGraph();
+      // Every pose may have moved, so the optimized map is re-rendered
+      // from scratch. This is what makes the walls snap into place.
+      rebuildOptimizedMap();
+    } else {
+      integrateIntoOptimizedMap(keyframes_.back());
     }
+    // Raw-odometry poses never change, so that map only ever grows.
+    integrateIntoRawMap(keyframes_.back());
 
     publishAll(stamp);
   }
@@ -353,6 +406,7 @@ private:
     publishPaths(stamp);
     publishMarkers();
     publishMetrics();
+    publishMaps(stamp);
   }
 
   void publishPaths(const rclcpp::Time & stamp)
@@ -479,6 +533,48 @@ private:
     loop_closure_count_pub_->publish(count_msg);
   }
 
+  // ---- occupancy grid mapping ----
+
+  // LiDAR pose in the map frame for a given robot base pose.
+  Pose2D sensorPose(const Pose2D & base_pose) const
+  {
+    return compose(base_pose, lidar_offset_);
+  }
+
+  void integrateIntoRawMap(const Keyframe & kf)
+  {
+    if (build_map_) {
+      raw_map_->integrateScan(sensorPose(kf.raw_odom_pose), kf.scan);
+    }
+  }
+
+  void integrateIntoOptimizedMap(const Keyframe & kf)
+  {
+    if (build_map_) {
+      optimized_map_->integrateScan(sensorPose(kf.estimate), kf.scan);
+    }
+  }
+
+  void rebuildOptimizedMap()
+  {
+    if (!build_map_) {
+      return;
+    }
+    optimized_map_->reset();
+    for (const auto & kf : keyframes_) {
+      optimized_map_->integrateScan(sensorPose(kf.estimate), kf.scan);
+    }
+  }
+
+  void publishMaps(const rclcpp::Time & stamp)
+  {
+    if (!build_map_) {
+      return;
+    }
+    optimized_map_pub_->publish(optimized_map_->toMsg("odom", stamp));
+    raw_map_pub_->publish(raw_map_->toMsg("odom", stamp, raw_map_x_offset_));
+  }
+
   // parameters
   std::string odom_topic_, scan_topic_, ground_truth_topic_;
   double linear_threshold_, angular_threshold_;
@@ -486,6 +582,9 @@ private:
   int loop_min_index_gap_;
   double loop_fitness_threshold_;
   double icp_fitness_threshold_;
+  bool build_map_{true};
+  Pose2D lidar_offset_;
+  double raw_map_x_offset_{0.0};
 
   // state
   std::vector<Keyframe> keyframes_;
@@ -498,6 +597,9 @@ private:
   gtsam::NonlinearFactorGraph graph_;
   gtsam::Values initial_values_;
 
+  std::unique_ptr<OccupancyGridMap> optimized_map_;  // rendered from optimized poses
+  std::unique_ptr<OccupancyGridMap> raw_map_;        // rendered from raw odometry poses
+
   nav_msgs::msg::Path raw_odom_path_, optimized_path_, gt_path_;
 
   // ROS interfaces
@@ -509,6 +611,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr raw_drift_pub_, optimized_drift_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr loop_closure_count_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr optimized_map_pub_, raw_map_pub_;
 };
 
 int main(int argc, char ** argv)

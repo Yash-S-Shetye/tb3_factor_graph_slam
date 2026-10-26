@@ -28,6 +28,12 @@ target_include_directories(scan_matcher PUBLIC include)
 ament_target_dependencies(scan_matcher sensor_msgs)
 target_link_libraries(scan_matcher ${PCL_LIBRARIES})
 
+# Log-odds occupancy grid (ray casting from stored scans + keyframe poses).
+add_library(occupancy_grid_map src/occupancy_grid_map.cpp)
+target_include_directories(occupancy_grid_map PUBLIC include)
+ament_target_dependencies(occupancy_grid_map rclcpp nav_msgs sensor_msgs)
+target_link_libraries(occupancy_grid_map ${PCL_LIBRARIES})
+
 add_executable(factor_graph_slam_node src/factor_graph_slam_node.cpp)
 ament_target_dependencies(factor_graph_slam_node
   rclcpp
@@ -39,6 +45,7 @@ ament_target_dependencies(factor_graph_slam_node
 )
 target_link_libraries(factor_graph_slam_node
   scan_matcher
+  occupancy_grid_map
   ${PCL_LIBRARIES}
   gtsam
 )
