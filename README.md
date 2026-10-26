@@ -21,6 +21,10 @@ same operations as project 1's edge computation). What's new:
   `BetweenFactor`s link consecutive and loop-closed nodes, and every
   loop closure triggers a full batch Levenberg-Marquardt re-optimization
   of the graph.
+- **Occupancy grid mapping**: each keyframe keeps its raw LiDAR scan, and
+  the scans are ray-cast into a log-odds grid from the keyframe poses.
+  Two maps are built, one from raw odometry poses and one from optimized
+  poses, so you can see directly what the pose graph buys you.
 
 ## What to expect
 
@@ -42,6 +46,11 @@ Drive the robot around `turtlebot3_world`'s perimeter and back to
    not just the newest node.
 4. `/factor_graph/optimized_drift` should drop noticeably compared to
    `/factor_graph/raw_drift` at that same moment.
+
+5. The **Optimized Map** (left) has crisp, single walls, while the **Raw
+   Odometry Map** (right) shows smeared or doubled walls where drift
+   accumulated. When a loop closure fires, the optimized map is
+   re-rendered from the corrected poses and the walls snap into place.
 
 If you don't complete a real loop, you'll only ever see step 1 — no
 loop closure candidate will be within the search radius, which is
@@ -151,15 +160,51 @@ ros2 run turtlebot3_teleop teleop_keyboard
 | `/factor_graph/optimized_path` | `nav_msgs/Path` | Current best GTSAM estimate for every keyframe |
 | `/factor_graph/gt_path` | `nav_msgs/Path` | Ground truth (if available) |
 | `/factor_graph/graph_markers` | `visualization_msgs/MarkerArray` | Nodes (blue spheres), odometry edges (orange), loop closures (red) |
+| `/factor_graph/optimized_map` | `nav_msgs/OccupancyGrid` | Map ray-cast from the optimized keyframe poses (transient-local QoS) |
+| `/factor_graph/raw_map` | `nav_msgs/OccupancyGrid` | Map ray-cast from raw odometry poses, shifted by `raw_map_x_offset` for side-by-side display |
 | `/factor_graph/raw_drift` | `std_msgs/Float64` | \|raw_odom − ground_truth\| at the latest keyframe |
 | `/factor_graph/optimized_drift` | `std_msgs/Float64` | \|optimized − ground_truth\| at the latest keyframe |
 | `/factor_graph/loop_closure_count` | `std_msgs/Int32` | Running total of accepted loop closures |
+
+## Mapping
+
+The map is a function of the keyframe poses and their stored scans, so
+the pose graph does the hard part and mapping is only a rendering step.
+
+1. **Store raw scans.** Every keyframe keeps its LiDAR ranges in the
+   sensor frame (`StoredScan`), not pre-transformed into the map.
+2. **Ray-cast into a log-odds grid** (`OccupancyGridMap`). For each beam,
+   Bresenham's line algorithm walks from the sensor cell to the end
+   cell. Cells along the way get "more free" (-0.4), and the end cell
+   gets "more occupied" (+0.85) if the beam actually hit something.
+   Beams with no return (`inf`) only mark free space, `NaN` and
+   below-`range_min` readings are skipped, and values are clamped to
+   [-5, 5].
+3. **Account for the LiDAR mount.** The LiDAR is not at the robot base
+   origin, so each scan is placed using `compose(base_pose, lidar_offset)`.
+   Defaults are for waffle_pi (-0.064 m in x); burger is -0.032 m.
+4. **Update schedule.** A new keyframe is integrated incrementally. After
+   every loop closure the optimized map is **reset and re-rendered from
+   all keyframes at their new poses**, because every pose may have moved.
+   The raw map never needs this, since raw odometry poses never change.
+5. **Publish** as `nav_msgs/OccupancyGrid` in the `odom` frame (unknown
+   cells -1, known cells 0-100) with transient-local QoS, so RViz shows
+   the latest map even if it connects late.
+
+Scope: this is mapping with poses from the graph, not a tightly coupled
+SLAM system. There is no scan-to-map matching, and the map is only as
+good as the optimized poses. Rebuilding on every loop closure is cheap at
+this scale (hundreds of keyframes) but would not scale to a large
+environment.
 
 ## RViz setup
 
 The launch file opens RViz with `config/factor_graph_slam.rviz`, which
 already contains these displays (raw odom orange, optimized blue,
-ground truth white, graph markers). The optimized path is drawn in a
+ground truth white, graph markers, and the two maps). The raw-odometry
+map is drawn `raw_map_x_offset` metres to the right of the optimized map
+(display only; the paths are not shifted). Map displays need Durability
+Policy set to Transient Local, which the config already does. The optimized path is drawn in a
 similar blue to the node spheres, so it can be hard to see underneath
 them. If a display shows an error, delete it and re-add it by topic
 (Fixed Frame: `odom`):
@@ -176,9 +221,6 @@ red loop-closure edge appears in the markers is the whole point of this
 project — it's optimization actually doing something, not just a graph
 sitting there.
 
-![Pose graph SLAM with loop closure](pose_graph_loop_closure.png)
-*Raw odometry (orange) vs. GTSAM-optimized pose graph (blue) with ICP loop closures (red).*
-
 ## Tuning
 
 | Parameter | Default | Effect |
@@ -188,6 +230,17 @@ sitting there.
 | `loop_closure_min_index_gap` | 20 | Prevents "closing a loop" with a keyframe from 2 seconds ago |
 | `loop_closure_fitness_threshold` | 0.05 | Lower = stricter acceptance of loop closure ICP matches |
 | `icp_fitness_threshold` | 0.08 | Lower = stricter acceptance of odometry-edge ICP matches |
+
+Mapping parameters (set in the launch file):
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `build_map` | `true` | Set `false` to skip mapping entirely |
+| `map_resolution` | 0.05 m | Cell size; smaller = sharper walls, larger messages |
+| `map_width` / `map_height` | 12 m | Grid extent; must cover everywhere the robot (including drifted raw poses) can go, since anything outside is ignored |
+| `map_origin_x` / `map_origin_y` | -6 m | World position of the grid's corner. The default window is centred near the world origin |
+| `lidar_offset_x/y/yaw` | -0.064 / 0 / 0 | LiDAR pose relative to the base (waffle_pi) |
+| `raw_map_x_offset` | 13.0 (launch arg) | Display shift of the raw map; `0.0` overlays the two maps |
 
 If loop closures never fire even after a clean loop, try raising
 `loop_closure_search_radius` slightly (odometry drift may have grown
@@ -227,6 +280,20 @@ closures are rejected.
   expected**: the ICP acceptance thresholds are probably too loose; see
   the note under Tuning. Also check the console for the `fitness=` value
   logged with each closure.
+- **No maps appear in RViz**: confirm `ros2 topic hz /factor_graph/optimized_map`
+  shows messages, then check the Map display's Durability Policy is
+  Transient Local and its topic matches. Maps only appear after the first
+  keyframe, so drive the robot.
+- **Map is shifted or cut off**: the robot left the grid. Increase
+  `map_width`/`map_height` or move `map_origin_x/y`. The raw map shifted
+  right of the optimized one is intentional (`raw_map_x_offset`).
+- **Walls are doubled or blurry in the optimized map**: usually a
+  frame problem. Check `lidar_offset_x` matches your TB3 model, and
+  that scans are paired with their own keyframe's pose, not the latest
+  odometry.
+- **Streaks across the map**: beams with `inf`/`NaN` ranges must be
+  handled as described under Mapping; if you modified
+  `integrateScan`, check that case first.
 - **The graph appears offset from the other paths**: node 0 must be
   anchored at the first odometry pose (the current code does this). If
   you are on an older copy that pinned node 0 at `(0, 0, 0)`, update
