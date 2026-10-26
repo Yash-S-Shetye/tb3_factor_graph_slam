@@ -302,3 +302,6 @@ closures are rejected.
   you are on an older copy that pinned node 0 at `(0, 0, 0)`, update
   `addFirstKeyframe` in `factor_graph_slam_node.cpp`, otherwise
   `optimized_drift` will include the robot's spawn offset.
+
+  ## Video Demonstration
+  [![Watch the demo](https://img.youtube.com/vi/ktDEgRJt4u4/hqdefault.jpg)](https://www.youtube.com/watch?v=ktDEgRJt4u4)
